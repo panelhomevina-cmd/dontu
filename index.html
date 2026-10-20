@@ -1,0 +1,141 @@
+<!doctype html>
+<html lang="vi">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Đơn từ Panel Home</title>
+<meta name="description" content="Gửi và duyệt đơn nghỉ phép, đi muộn, về sớm của Panel Home – Bảo Tín">
+<link rel="manifest" href="manifest.webmanifest">
+<link rel="icon" href="icon-192.png">
+<link rel="apple-touch-icon" href="apple-touch-icon.png">
+<meta name="theme-color" content="#15653e">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-title" content="Đơn từ">
+<meta name="apple-mobile-web-app-status-bar-style" content="default">
+<style>
+  html, body { margin: 0; height: 100%; background: #f3f5f4; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; }
+  #app { position: fixed; top: env(safe-area-inset-top); left: 0; right: 0; bottom: 0; width: 100%; height: calc(100% - env(safe-area-inset-top)); border: 0; background: #f3f5f4; }
+  #bar { position: fixed; left: 12px; right: 12px; bottom: calc(14px + env(safe-area-inset-bottom)); z-index: 10;
+         display: none; align-items: center; gap: 10px; padding: 12px 12px 12px 16px; border-radius: 16px;
+         background: #17251d; color: #fff; box-shadow: 0 8px 28px rgba(0,0,0,.28); font-size: 15px; line-height: 1.4; }
+  #bar.show { display: flex; }
+  #bar p { margin: 0; flex: 1; }
+  #bar button { border: 0; border-radius: 10px; font: inherit; font-weight: 600; cursor: pointer; }
+  #ok { background: #2fb171; color: #fff; padding: 10px 14px; white-space: nowrap; }
+  #x { background: transparent; color: #b9c7bf; padding: 8px; font-size: 18px; line-height: 1; }
+  @media (min-width: 640px) { #bar { left: auto; right: 20px; max-width: 460px; } }
+</style>
+</head>
+<body>
+<iframe id="app" title="Đơn từ Panel Home" allow="clipboard-write"></iframe>
+<div id="bar" role="status" aria-live="polite"><p id="msg"></p><button id="ok" type="button"></button><button id="x" type="button" aria-label="Để sau">✕</button></div>
+
+<script src="firebase-config.js"></script>
+<script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-app-compat.js"></script>
+<script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-messaging-compat.js"></script>
+<script>
+(function () {
+  'use strict';
+  const C = self.DONTU;
+  const $ = id => document.getElementById(id);
+  const tab = new URLSearchParams(location.search).get('tab');
+  $('app').src = C.EXEC + (tab ? '?tab=' + encodeURIComponent(tab) : '');
+
+  const ua = navigator.userAgent;
+  const ios = /iPhone|iPad|iPod/.test(ua) || (/Macintosh/.test(ua) && navigator.maxTouchPoints > 1);
+  const android = /Android/.test(ua);
+  const standalone = matchMedia('(display-mode: standalone)').matches || navigator.standalone === true;
+  const device = ios ? 'iPhone' : android ? 'Android' : 'May tinh';
+  const supported = 'serviceWorker' in navigator && 'Notification' in window && 'PushManager' in window;
+  const ls = {
+    get(k) { try { return localStorage.getItem(k); } catch (e) { return null; } },
+    set(k, v) { try { localStorage.setItem(k, v); } catch (e) {} }
+  };
+
+  let appWin = null, appOrigin = null, user = null, swReg = null, messaging = null, lastToken = '';
+
+  /* ---------- thanh nhắc phía dưới ---------- */
+  let onOk = null, barKey = '', hideTimer = 0;
+  function showBar(text, okText, ok, key, autoHide) {
+    if (key && Number(ls.get('dt_skip_' + key) || 0) > Date.now()) return;
+    clearTimeout(hideTimer);
+    $('msg').textContent = text; $('ok').textContent = okText; onOk = ok; barKey = key || '';
+    $('bar').classList.add('show');
+    if (autoHide) hideTimer = setTimeout(hideBar, autoHide);
+  }
+  function hideBar() { $('bar').classList.remove('show'); }
+  $('ok').addEventListener('click', () => { const f = onOk; hideBar(); if (f) f(); });
+  $('x').addEventListener('click', () => { if (barKey) ls.set('dt_skip_' + barKey, String(Date.now() + 3 * 864e5)); hideBar(); });
+
+  /* ---------- Firebase ---------- */
+  async function initFb() {
+    if (messaging) return messaging;
+    if (!supported) return null;
+    swReg = await navigator.serviceWorker.register('firebase-messaging-sw.js');
+    await navigator.serviceWorker.ready;
+    if (!firebase.apps.length) firebase.initializeApp(C.FIREBASE);
+    const ok = await Promise.resolve(firebase.messaging.isSupported());
+    if (!ok) return null;
+    messaging = firebase.messaging();
+    /* App đang mở: tự hiện thông báo và làm mới danh sách đơn. */
+    messaging.onMessage(p => {
+      const n = p.notification || {}, d = p.data || {};
+      swReg.showNotification(n.title || d.title || 'Đơn từ', { body: n.body || d.body || '', icon: 'icon-192.png', tag: 'dontu-fg', data: { link: d.link || location.href } });
+      toApp({ type: 'refresh' });
+    });
+    return messaging;
+  }
+  async function sendToken() {
+    const m = await initFb();
+    if (!m) { showBar('Máy này chưa hỗ trợ thông báo. iPhone cần iOS 16.4 trở lên và mở app từ biểu tượng ngoài màn hình chính.', 'Đã hiểu', null, 'unsup'); return; }
+    const t = await m.getToken({ vapidKey: C.VAPID, serviceWorkerRegistration: swReg });
+    if (t) { lastToken = t; toApp({ type: 'token', token: t, thietBi: device }); }
+  }
+  async function enable() {
+    try {
+      const p = await Notification.requestPermission();
+      if (p === 'granted') await sendToken();
+      else showDenied();
+    } catch (e) {
+      showBar('Chưa bật được thông báo: ' + (e && e.message || e), 'Thử lại', enable, '');
+    }
+  }
+  function showDenied() {
+    showBar(ios ? 'Thông báo đang bị tắt. Vào Cài đặt → Thông báo → Đơn từ → bật Cho phép thông báo.'
+                : 'Thông báo đang bị chặn. Bấm biểu tượng ổ khóa/⋮ → Cài đặt trang → Thông báo → Cho phép.', 'Đã hiểu', null, 'denied');
+  }
+  function onLogin() {
+    if (ios && !standalone) {
+      showBar('Để nhận thông báo trên iPhone: bấm nút Chia sẻ rồi chọn "Thêm vào Màn hình chính", sau đó mở app từ biểu tượng Đơn từ.', 'Đã hiểu', null, 'ios');
+      return;
+    }
+    if (!supported) return;
+    const p = Notification.permission;
+    if (p === 'granted') sendToken().catch(e => console.warn(e));
+    else if (p === 'default') showBar('Bật thông báo để điện thoại báo ngay khi có đơn mới hoặc đơn của bạn có kết quả.', 'Bật thông báo', enable, 'ask');
+    else showDenied();
+  }
+
+  /* ---------- nói chuyện với app đơn từ (Apps Script) bên trong ---------- */
+  function toApp(m) { if (appWin) appWin.postMessage(Object.assign({ src: 'dontu-shell' }, m), appOrigin); }
+  window.addEventListener('message', e => {
+    if (!/^https:\/\/[a-z0-9-]+\.googleusercontent\.com$/.test(e.origin)) return;
+    const d = e.data || {};
+    if (d.src !== 'dontu') return;
+    appWin = e.source; appOrigin = e.origin;
+    if (d.type === 'login') { user = { maNV: d.maNV, ten: d.ten }; onLogin(); }
+    else if (d.type === 'logout') { user = null; hideBar(); }
+    else if (d.type === 'registered') {
+      const k = 'dt_ok_' + (user && user.maNV) + '_' + lastToken.slice(-12);
+      if (!ls.get(k)) { ls.set(k, '1'); showBar('Đã bật thông báo cho ' + (user ? user.ten : 'bạn') + ' trên máy này.', 'OK', null, '', 5000); }
+    }
+    else if (d.type === 'regfail') showBar('Chưa lưu được thiết bị: ' + (d.msg || ''), 'Thử lại', () => sendToken().catch(() => {}), '');
+  });
+
+  /* Đăng ký service worker sớm để Android/Chrome nhận diện là app cài được. */
+  if (supported) navigator.serviceWorker.register('firebase-messaging-sw.js').catch(() => {});
+})();
+</script>
+</body>
+</html>
