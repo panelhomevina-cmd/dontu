@@ -24,11 +24,30 @@
   #bar button { border: 0; border-radius: 10px; font: inherit; font-weight: 600; cursor: pointer; }
   #ok { background: #2fb171; color: #fff; padding: 10px 14px; white-space: nowrap; }
   #x { background: transparent; color: #b9c7bf; padding: 8px; font-size: 18px; line-height: 1; }
+  #lg { position: fixed; inset: 0; z-index: 5; background: #f3f5f4; display: none; overflow: auto; padding: max(24px, env(safe-area-inset-top)) 20px 24px; box-sizing: border-box; }
+  #lg.show { display: flex; align-items: flex-start; justify-content: center; }
+  #lg form { width: 100%; max-width: 420px; margin-top: 8vh; background: #fff; border: 1px solid #d9e1dd; border-radius: 14px; padding: 22px; box-sizing: border-box; color: #14221e; }
+  #lg h2 { margin: 0 0 4px; font-size: 1.35rem; }
+  #lg p { margin: 0 0 14px; color: #566862; font-size: .9rem; }
+  #lg label { display: block; margin: 12px 0 6px; font-weight: 600; font-size: .9rem; }
+  #lg input { width: 100%; box-sizing: border-box; font: inherit; font-size: 16px; padding: 12px; border: 1px solid #b9c6c0; border-radius: 10px; background: #fff; color: inherit; }
+  #lg #le { color: #a8201a; background: #fae1de; padding: 8px 10px; border-radius: 8px; margin: 12px 0 0; }
+  #lg #lb { width: 100%; margin-top: 16px; border: 0; border-radius: 10px; background: #0a6b5d; color: #fff; font: inherit; font-weight: 600; padding: 13px; cursor: pointer; }
+  #lg #lb:disabled { opacity: .6; }
+  #lg #ls { display: block; margin: 12px auto 0; background: none; border: 0; color: #566862; font: inherit; font-size: .85rem; text-decoration: underline; cursor: pointer; }
   @media (min-width: 640px) { #bar { left: auto; right: 20px; max-width: 460px; } }
 </style>
 </head>
 <body>
 <iframe id="app" title="Đơn từ Panel Home" allow="clipboard-write"></iframe>
+<div id="lg"><form id="lf" method="post" action="#" autocomplete="on">
+  <h2>Đăng nhập</h2><p>Nhập mã nhân viên và mã PIN do nhân sự cấp. iPhone sẽ hỏi lưu mật khẩu, lần sau chỉ cần Face ID.</p>
+  <label for="lu">Mã nhân viên</label><input id="lu" name="username" autocomplete="username" autocapitalize="characters" spellcheck="false">
+  <label for="lp">Mã PIN</label><input id="lp" name="password" type="password" inputmode="numeric" autocomplete="current-password">
+  <div id="le" hidden></div>
+  <button id="lb" type="submit">Vào</button>
+  <button id="ls" type="button">Dùng ô đăng nhập khác</button>
+</form></div>
 <div id="bar" role="status" aria-live="polite"><p id="msg"></p><button id="ok" type="button"></button><button id="x" type="button" aria-label="Để sau">✕</button></div>
 
 <script src="firebase-config.js"></script>
@@ -117,6 +136,24 @@
     else showDenied();
   }
 
+  /* ---------- ô đăng nhập ở trang chính (để iPhone lưu mật khẩu bằng Keychain) ---------- */
+  let skipLg = false;
+  function showLg(msg) {
+    if (skipLg) return;
+    const e = $('le'); e.hidden = !msg; e.textContent = msg || '';
+    $('lb').disabled = false; $('lb').textContent = 'Vào';
+    $('lg').classList.add('show');
+  }
+  function hideLg() { $('lg').classList.remove('show'); $('lp').value = ''; }
+  $('lf').addEventListener('submit', ev => {
+    ev.preventDefault();
+    const ma = $('lu').value.trim().toUpperCase(), pin = $('lp').value.trim();
+    if (!ma || !pin) { showLg('Nhập mã nhân viên và mã PIN.'); return; }
+    $('lb').disabled = true; $('lb').textContent = 'Đang vào…';
+    toApp({ type: 'dologin', maNV: ma, pin: pin });
+  });
+  $('ls').addEventListener('click', () => { skipLg = true; $('lg').classList.remove('show'); });
+
   /* ---------- nói chuyện với app đơn từ (Apps Script) bên trong ---------- */
   function toApp(m) { if (appWin) appWin.postMessage(Object.assign({ src: 'dontu-shell' }, m), appOrigin); }
   window.addEventListener('message', e => {
@@ -124,7 +161,8 @@
     const d = e.data || {};
     if (d.src !== 'dontu') return;
     appWin = e.source; appOrigin = e.origin;
-    if (d.type === 'login') { user = { maNV: d.maNV, ten: d.ten }; onLogin(); }
+    if (d.type === 'needlogin') showLg(d.msg);
+    else if (d.type === 'login') { hideLg(); user = { maNV: d.maNV, ten: d.ten }; onLogin(); }
     else if (d.type === 'remember' && d.auth && d.auth.maNV && d.auth.pin) ls.set('dt_auth_v1', JSON.stringify({ maNV: String(d.auth.maNV), pin: String(d.auth.pin) }));
     else if (d.type === 'ask') { let a = null; try { a = JSON.parse(ls.get('dt_auth_v1') || 'null'); } catch (x) {} toApp({ type: 'saved', auth: a }); }
     else if (d.type === 'forget') { try { localStorage.removeItem('dt_auth_v1'); } catch (x) {} }
