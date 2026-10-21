@@ -125,7 +125,10 @@
     if (d.src !== 'dontu') return;
     appWin = e.source; appOrigin = e.origin;
     if (d.type === 'login') { user = { maNV: d.maNV, ten: d.ten }; onLogin(); }
-    else if (d.type === 'logout') { user = null; hideBar(); }
+    else if (d.type === 'remember' && d.auth && d.auth.maNV && d.auth.pin) ls.set('dt_auth_v1', JSON.stringify({ maNV: String(d.auth.maNV), pin: String(d.auth.pin) }));
+    else if (d.type === 'ask') { let a = null; try { a = JSON.parse(ls.get('dt_auth_v1') || 'null'); } catch (x) {} toApp({ type: 'saved', auth: a }); }
+    else if (d.type === 'forget') { try { localStorage.removeItem('dt_auth_v1'); } catch (x) {} }
+    else if (d.type === 'logout') { user = null; hideBar(); try { localStorage.removeItem('dt_auth_v1'); } catch (x) {} }
     else if (d.type === 'registered') {
       const k = 'dt_ok_' + (user && user.maNV) + '_' + lastToken.slice(-12);
       if (!ls.get(k)) { ls.set(k, '1'); showBar('Đã bật thông báo cho ' + (user ? user.ten : 'bạn') + ' trên máy này.', 'OK', null, '', 5000); }
