@@ -34,6 +34,11 @@
   #lg #le { color: #a8201a; background: #fae1de; padding: 8px 10px; border-radius: 8px; margin: 12px 0 0; }
   #lg #lb { width: 100%; margin-top: 16px; border: 0; border-radius: 10px; background: #0a6b5d; color: #fff; font: inherit; font-weight: 600; padding: 13px; cursor: pointer; }
   #lg #lb:disabled { opacity: .6; }
+  #lg #lfid { width: 100%; margin: 14px 0 4px; border: 0; border-radius: 10px; background: #14221e; color: #fff; font: inherit; font-weight: 600; padding: 14px; cursor: pointer; display: none; }
+  #lg #lfid.show { display: block; }
+  #lg #lfid:disabled { opacity: .6; }
+  #lg .or { text-align: center; color: #7a8b85; font-size: .8rem; margin: 10px 0 0; display: none; }
+  #lg .or.show { display: block; }
   #lg #ls { display: block; margin: 12px auto 0; background: none; border: 0; color: #566862; font: inherit; font-size: .85rem; text-decoration: underline; cursor: pointer; }
   @media (min-width: 640px) { #bar { left: auto; right: 20px; max-width: 460px; } }
 </style>
@@ -41,7 +46,8 @@
 <body>
 <iframe id="app" title="Đơn từ Panel Home" allow="clipboard-write"></iframe>
 <div id="lg"><form id="lf" method="post" action="#" autocomplete="on">
-  <h2>Đăng nhập</h2><p>Nhập mã nhân viên và mã PIN do nhân sự cấp. iPhone sẽ hỏi lưu mật khẩu, lần sau chỉ cần Face ID.</p>
+  <h2>Đăng nhập</h2><p>Nhập mã nhân viên và mã PIN do nhân sự cấp. Sau khi vào được, bật Face ID để lần sau không phải gõ lại.</p>
+  <button id="lfid" type="button">Đăng nhập bằng Face ID</button><div class="or" id="lor">hoặc dùng mã PIN</div>
   <label for="lu">Mã nhân viên</label><input id="lu" name="username" autocomplete="username" autocapitalize="characters" spellcheck="false">
   <label for="lp">Mã PIN</label><input id="lp" name="password" type="password" inputmode="numeric" autocomplete="current-password">
   <div id="le" hidden></div>
@@ -136,6 +142,65 @@
     else showDenied();
   }
 
+  /* ---------- Face ID (passkey) ---------- */
+  const RPID = location.hostname;
+  const canPk = !!(window.PublicKeyCredential && navigator.credentials && navigator.credentials.create);
+  const u8 = s => { s = String(s).replace(/-/g, '+').replace(/_/g, '/'); while (s.length % 4) s += '='; const b = atob(s), a = new Uint8Array(b.length); for (let i = 0; i < b.length; i++) a[i] = b.charCodeAt(i); return a; };
+  const b64 = buf => { const a = new Uint8Array(buf); let s = ''; for (let i = 0; i < a.length; i++) s += String.fromCharCode(a[i]); return btoa(s).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, ''); };
+  const pend = {}; let rid = 0;
+  function rpc(action, p, useAuth) {
+    return new Promise((res, rej) => {
+      if (!appWin) { rej(new Error('App chưa sẵn sàng, thử lại sau vài giây.')); return; }
+      const id = ++rid; pend[id] = { res, rej };
+      toApp({ type: 'rpc', id: id, action: action, p: p || {}, useAuth: !!useAuth });
+      setTimeout(() => { if (pend[id]) { delete pend[id]; rej(new Error('Hết thời gian chờ máy chủ.')); } }, 25000);
+    });
+  }
+  function pkErr(e) {
+    const n = e && e.name;
+    if (n === 'NotAllowedError' || n === 'AbortError') return 'Đã hủy hoặc Face ID không nhận ra. Thử lại hoặc dùng mã PIN.';
+    return (e && e.message) || 'Lỗi không rõ';
+  }
+  let pre = null;
+  function prefetch() { rpc('pkChal', {}, false).then(c => { pre = { c: c, t: Date.now() }; }).catch(() => {}); }
+  async function takeChal() {
+    if (pre && Date.now() - pre.t < 240000) { const c = pre.c; pre = null; return c; }
+    return rpc('pkChal', {}, false);
+  }
+  async function enrollFaceId() {
+    try {
+      const c = await takeChal();
+      const cred = await navigator.credentials.create({ publicKey: {
+        challenge: u8(c.challenge), rp: { name: 'Đơn từ Panel Home', id: RPID },
+        user: { id: new TextEncoder().encode(user.maNV), name: user.maNV, displayName: user.ten || user.maNV },
+        pubKeyCredParams: [{ type: 'public-key', alg: -7 }],
+        authenticatorSelection: { authenticatorAttachment: 'platform', residentKey: 'required', requireResidentKey: true, userVerification: 'required' },
+        attestation: 'none', timeout: 60000 } });
+      const r = cred.response;
+      await rpc('pkReg', { credId: b64(cred.rawId), clientDataJSON: b64(r.clientDataJSON), spki: b64(r.getPublicKey()) }, true);
+      ls.set('dt_pk', '1'); ls.set('dt_pk_' + user.maNV, '1');
+      showBar('Đã bật Face ID. Lần sau mở app chỉ cần Face ID.', 'OK', null, '', 6000);
+    } catch (e) { showBar('Chưa bật được Face ID: ' + pkErr(e), 'Đã hiểu', null, ''); }
+    setTimeout(onLogin, 300);
+  }
+  let viaFace = false;
+  async function faceLogin(auto) {
+    const b = $('lfid'); b.disabled = true; b.textContent = 'Đang xác thực…';
+    try {
+      const c = await takeChal();
+      const a = await navigator.credentials.get({ publicKey: { challenge: u8(c.challenge), rpId: RPID, userVerification: 'required', timeout: 60000 } });
+      const r = a.response;
+      const out = await rpc('pkLogin', { credId: b64(a.rawId), clientDataJSON: b64(r.clientDataJSON), authData: b64(r.authenticatorData), sig: b64(r.signature) }, false);
+      viaFace = true;
+      toApp({ type: 'dologin', maNV: out.maNV, tok: out.tok });
+    } catch (e) {
+      b.disabled = false; b.textContent = 'Đăng nhập bằng Face ID'; prefetch();
+      if (auto !== true) { const m = $('le'); m.hidden = false; m.textContent = pkErr(e); }
+    }
+  }
+  $('lfid').addEventListener('click', () => faceLogin(false));
+  let autoTried = false;
+
   /* ---------- ô đăng nhập ở trang chính (để iPhone lưu mật khẩu bằng Keychain) ---------- */
   let skipLg = false;
   function showLg(msg) {
@@ -143,6 +208,9 @@
     const e = $('le'); e.hidden = !msg; e.textContent = msg || '';
     $('lb').disabled = false; $('lb').textContent = 'Vào';
     $('lg').classList.add('show');
+    if (canPk) { $('lfid').classList.add('show'); $('lor').classList.add('show'); $('lfid').disabled = false; $('lfid').textContent = 'Đăng nhập bằng Face ID'; }
+    if (canPk && !autoTried && !msg && ls.get('dt_pk') === '1') { autoTried = true; faceLogin(true); }
+    else if (canPk) prefetch();
   }
   function hideLg() { $('lg').classList.remove('show'); $('lp').value = ''; }
   $('lf').addEventListener('submit', ev => {
@@ -162,7 +230,19 @@
     if (d.src !== 'dontu') return;
     appWin = e.source; appOrigin = e.origin;
     if (d.type === 'needlogin') showLg(d.msg);
-    else if (d.type === 'login') { hideLg(); user = { maNV: d.maNV, ten: d.ten }; onLogin(); }
+    else if (d.type === 'login') {
+      hideLg(); user = { maNV: d.maNV, ten: d.ten };
+      const wasFace = viaFace; viaFace = false;
+      const key = 'dt_pk_' + d.maNV;
+      if (canPk && !wasFace && ls.get(key) !== '1' && Number(ls.get('dt_skip_pk') || 0) < Date.now()) {
+        prefetch();
+        showBar('Bật Face ID để lần sau vào app không cần gõ mã PIN?', 'Bật Face ID', enrollFaceId, 'pk');
+      } else onLogin();
+    }
+    else if (d.type === 'rpcres' && pend[d.id]) {
+      const h = pend[d.id]; delete pend[d.id];
+      try { const r = JSON.parse(d.res); r.ok ? h.res(r.data) : h.rej(new Error(r.error)); } catch (x) { h.rej(new Error('Phản hồi không hợp lệ.')); }
+    }
     else if (d.type === 'remember' && d.auth && d.auth.maNV && d.auth.pin) ls.set('dt_auth_v1', JSON.stringify({ maNV: String(d.auth.maNV), pin: String(d.auth.pin) }));
     else if (d.type === 'ask') { let a = null; try { a = JSON.parse(ls.get('dt_auth_v1') || 'null'); } catch (x) {} toApp({ type: 'saved', auth: a }); }
     else if (d.type === 'forget') { try { localStorage.removeItem('dt_auth_v1'); } catch (x) {} }
